@@ -1,5 +1,4 @@
 
-
 <!DOCTYPE html>
 <html lang="id">
 <head>
@@ -9,13 +8,20 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#E7F0F5">
-<title>CATATAN PRESENSI KELAS XI-6 — Gerbang Pintar SMAN 4 Kota Ternate</title>
+<title>CATATAN PRESENSI SISWA SISWI — Gerbang Pintar SMAN 4 Kota Ternate</title>
 <link rel="preconnect" href="https://cdnjs.cloudflare.com">
 <link rel="preconnect" href="https://cdn.jsdelivr.net">
+<!-- [OPTIMASI LOADING] qrcode.js & jsQR TETAP dimuat di sini (defer) karena
+     keduanya inti dari FUNGSI PEMINDAIAN — dibutuhkan sejak aplikasi pertama
+     kali dibuka. XLSX (~700KB+) dan JSZip SENGAJA TIDAK dimuat di sini lagi —
+     keduanya hanya dipakai fitur Admin yang jarang dipakai (impor Excel,
+     unduh kartu/QR massal dalam ZIP), jadi dimuat belakangan hanya saat
+     benar-benar dibutuhkan (lihat loadScriptOnce() & pemanggilannya di
+     handleImportFile/downloadAllQr/downloadAllQrOnly). Ini membebaskan
+     bandwidth di awal sepenuhnya untuk qrcode.js+jsQR, sehingga fungsi
+     pemindaian siap lebih cepat setiap kali aplikasi dibuka. -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js" defer></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" defer></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" defer></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" media="print" onload="this.media='all'">
@@ -598,7 +604,7 @@ const ICON = {
 // password (API_PASSWORD) yang sama dengan yang ditulis di Code.gs.
 // Selama dua nilai ini kosong, verifikasi PIN akan menampilkan pesan
 // "server belum terhubung" alih-alih diam-diam menerima PIN apa pun.
-const API_URL = 'https://script.google.com/macros/s/AKfycbyHsKlT15UGFzsg1Hh_VxQhnbrj_-vb_CxKJWUAwVeT_7KtUq8cG_KrlSd4YZhKusB3/exec'; // contoh: 'https://script.google.com/macros/s/xxxxx/exec'
+const API_URL = 'https://script.google.com/macros/s/AKfycbxQjXNVPkYRH6V5nLZ3kD8ZXEB94quFAGLBKrXDVEKYSOD0482xYCFcnXLDNRyQOAg-yA/exec'
 const API_KEY = 'SMA04T'; // samakan dengan API_PASSWORD di Code.gs
 
 async function callApi(payload){
@@ -663,11 +669,22 @@ const MANUAL_KET_OPTIONS = ["Sakit","Ijin","Bolos","Emergency","Lainnya"];
 // dan TIDAK HADIR bukan karena Alpa (bolos/tanpa keterangan), melainkan karena
 // Sakit, Ijin, atau keadaan darurat lain. "Lainnya" tetap membuka kotak ketik bebas.
 const TIDAK_HADIR_KET_OPTIONS = ["Sakit","Ijin","Emergency","Lainnya"];
+// Dipakai khusus panel "Input Keterangan (Alpa Otomatis)" — sama seperti
+// MANUAL_KET_OPTIONS, TAPI ditambah satu opsi di paling depan ("Alpa") yang
+// memungkinkan petugas MENGONFIRMASI bahwa siswa memang tidak hadir tanpa
+// keterangan sama sekali (tetap Alpa), bukan memaksa memilih salah satu
+// dari Sakit/Ijin/Bolos/Emergency/Lainnya untuk setiap kasus.
+const ALPA_KET_OPTIONS = ["Alpa","Sakit","Ijin","Bolos","Emergency","Lainnya"];
 // Label tampilan tombol keterangan — nilai "Lainnya" tetap dipakai secara
 // internal (menentukan kapan kotak teks bebas muncul), tapi ditampilkan ke
 // operator sebagai tombol "+ Tambah Keterangan" supaya jelas fungsinya:
-// menulis keterangan sendiri, bukan salah satu daftar preset.
-function ketOptionLabel(k){ return k === 'Lainnya' ? 'Tambah Keterangan' : k; }
+// menulis keterangan sendiri, bukan salah satu daftar preset. Nilai "Alpa"
+// (khusus panel Alpa Otomatis) ditampilkan dengan label yang lebih jelas.
+function ketOptionLabel(k){
+  if(k === 'Lainnya') return 'Tambah Keterangan';
+  if(k === 'Alpa') return 'Tidak Hadir Tanpa Keterangan (Alpa)';
+  return k;
+}
 let state = {
   screen:'landing',
   students:[],
@@ -947,10 +964,25 @@ function waLink(phone, text){
   return `https://wa.me/${p}?text=${encodeURIComponent(text)}`;
 }
 
-function buildWaMessage(student, type, ket, note){
+function buildWaMessage(student, type, ket, note, updated, alpaKet){
   const displayKet = ket || 'Hadir';
-  let msg = `*CATATAN PRESENSI KELAS XI-6*\n*SMAN 4 Kota Ternate*\n\nAssalamu'alaikum, Bapak/Ibu Wali dari *${student.name}* (${student.kelas}).\n\n`;
-  if(type === 'tidakHadir'){
+  let msg = `*CATATAN PRESENSI SISWA SISWI*\n*SMAN 4 Kota Ternate*\n\nAssalamu'alaikum, Bapak/Ibu Wali dari *${student.name}* (${student.kelas}).\n\n`;
+  if(alpaKet){
+    // Pesan KHUSUS untuk Input Keterangan pada siswa yang sistem tandai Alpa
+    // secara OTOMATIS (tidak ada aktivitas presensi sama sekali hari itu).
+    // TIDAK ada status "Tiba di Sekolah" maupun "Pulang" yang relevan di
+    // sini — jadi dibuat sesingkat & sedetail mungkin. Dua kemungkinan:
+    //  - Petugas mengonfirmasi TETAP tanpa keterangan (ket==='Alpa') → pesan
+    //    menegaskan siswa memang tidak hadir tanpa alasan hingga saat ini.
+    //  - Petugas memberi alasan jelas (Sakit/Ijin/Bolos/Emergency/Lainnya)
+    //    → pesan menjelaskan bahwa status awalnya otomatis (Alpa), lalu
+    //    diperbarui dengan keterangan yang sebenarnya.
+    if(displayKet === 'Alpa'){
+      msg += `Status: *TIDAK HADIR TANPA KETERANGAN (ALPA)*\nSiswa tidak masuk sekolah hari ini tanpa ada konfirmasi/alasan hingga saat ini.\nWaktu diperbarui: ${nowStr()} WIT`;
+    }else{
+      msg += `Status: *TIDAK HADIR*\nKeterangan: *${displayKet}* (semula tercatat Alpa otomatis oleh sistem, telah diperbarui petugas)\nWaktu diperbarui: ${nowStr()} WIT`;
+    }
+  }else if(type === 'tidakHadir'){
     msg += `Status: *TIDAK HADIR*\nKeterangan: *${displayKet}*\nWaktu dicatat: ${nowStr()} WIT`;
   }else if(type === 'manual'){
     msg += `Keterangan: *${displayKet}*\nWaktu dicatat: ${nowStr()} WIT`;
@@ -982,7 +1014,7 @@ function topbar(){
     <div class="brand">
       <div class="brand-mark"><img src="${LOGO_DATA_URI}" alt="Logo SMAN 4 Kota Ternate"></div>
       <div class="brand-text">
-        <div class="name">CATATAN PRESENSI KELAS XI-6</div>
+        <div class="name">CATATAN PRESENSI SISWA SISWI</div>
         <div class="sub">SMAN 4 Kota Ternate</div>
       </div>
     </div>
@@ -1109,9 +1141,11 @@ function screenAdmin(){
     <div class="screen-body">
       <div class="tabs">
         <button class="tab ${state.adminTab==='siswa'?'active':''}" data-tab="siswa">Data Siswa</button>
+        <button class="tab ${state.adminTab==='kartu'?'active':''}" data-tab="kartu">Unduh Kartu Presensi (Zip)</button>
+        <button class="tab ${state.adminTab==='qr'?'active':''}" data-tab="qr">Unduh Kode QR (Zip)</button>
         <button class="tab ${state.adminTab==='riwayat'?'active':''}" data-tab="riwayat">Riwayat Gerbang</button>
       </div>
-      ${state.adminTab==='siswa' ? adminSiswaTab() : adminRiwayatTab()}
+      ${state.adminTab==='siswa' ? adminSiswaTab() : state.adminTab==='riwayat' ? adminRiwayatTab() : state.adminTab==='kartu' ? adminKartuTab() : adminQrTab()}
     </div>
   </div>
   ${state.qrModalStudent ? qrModal(state.qrModalStudent) : ''}
@@ -1147,17 +1181,6 @@ function adminSiswaTab(){
     <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
       <button class="btn btn-gold btn-sm" id="btnPickBulkPhoto">${ICON.upload} Pilih Foto (Banyak Sekaligus)</button>
       <input type="file" id="bulkPhotoInput" accept="image/*" multiple style="display:none;">
-    </div>
-  </div>
-  <div class="panel">
-    <h4 style="font-family:'Space Grotesk';font-size:18.75px;margin-bottom:6px;">Unduh Kartu Presensi Massal</h4>
-    <p style="font-size:15px;color:var(--text-dim);margin-bottom:12px;line-height:1.5;">Unduh banyak kartu presensi siswa sekaligus (lengkap dengan logo, foto, dan QR) dalam satu file ZIP — satu file PNG per siswa, untuk semua siswa atau satu kelas saja.</p>
-    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
-      <select id="qrBulkKelas" style="background:var(--well);border:1px solid var(--line-strong);border-radius:7px;padding:8px 10px;color:var(--text);font-size:15px;">
-        <option value="">Semua Kelas (${state.students.length} siswa)</option>
-        ${uniqueKelasList().map(k=>`<option value="${escapeHtml(k)}">${escapeHtml(k)} (${state.students.filter(s=>s.kelas===k).length} siswa)</option>`).join('')}
-      </select>
-      <button class="btn btn-gold btn-sm" id="btnDownloadAllQr">${ICON.download} Unduh Kartu Presensi (ZIP)</button>
     </div>
   </div>` : ''}
   <div class="panel">
@@ -1218,6 +1241,74 @@ function adminRiwayatTab(){
           <div style="color:var(--text-faint); font-size:15px;">${escapeHtml(l.note||'')}</div>
         </div>`;
       }).join('')}
+    </div>`}
+  </div>`;
+}
+
+/* ================= ADMIN: tab Unduh Kartu Presensi (Zip) ================= */
+// Panel ini KHUSUS untuk mengunduh kartu presensi LENGKAP siswa — dengan
+// logo, foto, nama, kelas, DAN kode QR. Berbeda dari tab "Unduh Kode QR
+// (Zip)" yang hanya berisi kotak QR polos tanpa foto/desain kartu.
+function adminKartuTab(){
+  return `
+  <div class="panel">
+    <h4 style="font-family:'Space Grotesk';font-size:18.75px;margin-bottom:6px;">Unduh Kartu Presensi (Zip)</h4>
+    <p style="font-size:15px;color:var(--text-dim);margin-bottom:12px;line-height:1.5;">Unduh kartu presensi LENGKAP siswa — dengan logo sekolah, foto, nama, kelas, dan kode QR. Berbeda dari tab "Unduh Kode QR (Zip)" yang hanya berisi kode QR polos tanpa foto/desain kartu.</p>
+    ${state.students.length===0 ? emptyState('Belum ada siswa terdaftar.') : `
+    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:16px;">
+      <select id="kartuBulkKelas" style="background:var(--well);border:1px solid var(--line-strong);border-radius:7px;padding:8px 10px;color:var(--text);font-size:15px;">
+        <option value="">Semua Kelas (${state.students.length} siswa)</option>
+        ${uniqueKelasList().map(k=>`<option value="${escapeHtml(k)}">${escapeHtml(k)} (${state.students.filter(s=>s.kelas===k).length} siswa)</option>`).join('')}
+      </select>
+      <button class="btn btn-gold btn-sm" id="btnDownloadAllQr">${ICON.download} Unduh Kartu Presensi (ZIP)</button>
+    </div>
+    <div class="stu-list">
+      ${state.students.map(s=>`
+        <div class="stu-row">
+          <div class="stu-avatar">${initials(s.name)}</div>
+          <div class="stu-info">
+            <div class="nm">${escapeHtml(s.name)}</div>
+            <div class="meta">${escapeHtml(s.kelas)} · <span class="code">${s.code}</span></div>
+          </div>
+          <div class="stu-actions">
+            <button class="icon-btn" title="Lihat &amp; Unduh Kartu Presensi" data-qr="${s.id}">${ICON.qr}</button>
+          </div>
+        </div>
+      `).join('')}
+    </div>`}
+  </div>`;
+}
+
+/* ================= ADMIN: tab Unduh Kode QR ================= */
+// Panel ini KHUSUS untuk mengunduh kode QR polos siswa — TANPA desain
+// kartu presensi (logo, foto, nama, dsb). Berbeda dari panel "Unduh Kartu
+// Presensi Massal" pada tab Data Siswa, yang menghasilkan kartu ID lengkap.
+function adminQrTab(){
+  return `
+  <div class="panel">
+    <h4 style="font-family:'Space Grotesk';font-size:18.75px;margin-bottom:6px;">Unduh Kode QR (Zip)</h4>
+    <p style="font-size:15px;color:var(--text-dim);margin-bottom:12px;line-height:1.5;">Unduh kode QR polos siswa saja, tanpa desain kartu presensi (logo, foto, nama, kelas, dsb). Cocok kalau Anda ingin mengatur/mencetak tata letaknya sendiri.</p>
+    ${state.students.length===0 ? emptyState('Belum ada siswa terdaftar.') : `
+    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:16px;">
+      <select id="qrOnlyBulkKelas" style="background:var(--well);border:1px solid var(--line-strong);border-radius:7px;padding:8px 10px;color:var(--text);font-size:15px;">
+        <option value="">Semua Kelas (${state.students.length} siswa)</option>
+        ${uniqueKelasList().map(k=>`<option value="${escapeHtml(k)}">${escapeHtml(k)} (${state.students.filter(s=>s.kelas===k).length} siswa)</option>`).join('')}
+      </select>
+      <button class="btn btn-gold btn-sm" id="btnDownloadAllQrOnly">${ICON.download} Unduh Kode QR (ZIP)</button>
+    </div>
+    <div class="stu-list">
+      ${state.students.map(s=>`
+        <div class="stu-row">
+          <div class="stu-avatar">${initials(s.name)}</div>
+          <div class="stu-info">
+            <div class="nm">${escapeHtml(s.name)}</div>
+            <div class="meta">${escapeHtml(s.kelas)} · <span class="code">${s.code}</span></div>
+          </div>
+          <div class="stu-actions">
+            <button class="icon-btn" title="Unduh Kode QR" data-qronly="${s.id}">${ICON.download}</button>
+          </div>
+        </div>
+      `).join('')}
     </div>`}
   </div>`;
 }
@@ -1327,6 +1418,10 @@ function screenPetugasMode(){
           <div class="m-icon">${ICON.sakitIjin}</div>
           <div class="mode-text"><h4>Input Sakit / Ijin / Emergency</h4><p>Catat siswa yang belum tercatat masuk maupun pulang sama sekali karena Sakit, Ijin, atau Emergency lainnya — bukan Alpa. Bisa ketik alasan sendiri.</p><span class="m-badge">Tanpa QR</span></div>
         </div>
+        <div class="mode-card manual" id="modeAlpaKet">
+          <div class="m-icon">${ICON.alpa}</div>
+          <div class="mode-text"><h4>Input Keterangan (Alpa Otomatis)</h4><p>Tambahkan keterangan bagi siswa yang tercatat Alpa secara OTOMATIS oleh sistem (belum ada aktivitas presensi sama sekali sampai jam pengecekan).</p></div>
+        </div>
       </div>
     </div>
   </div>`;
@@ -1340,12 +1435,14 @@ function screenPetugasScan(){
     : state.petugasMode==='manualMasuk' ? 'Input Manual Masuk'
     : state.petugasMode==='manualPulang' ? 'Input Manual Pulang'
     : state.petugasMode==='tidakHadir' ? 'Input Sakit / Ijin / Emergency'
+    : state.petugasMode==='alpaKet' ? 'Input Keterangan (Alpa Otomatis)'
     : 'Input Keterangan';
   const modeTag = state.petugasMode==='masuk' ? 'MASUK'
     : state.petugasMode==='pulang' ? 'PULANG'
     : state.petugasMode==='manualMasuk' ? 'MANUAL MASUK'
     : state.petugasMode==='manualPulang' ? 'MANUAL PULANG'
     : state.petugasMode==='tidakHadir' ? 'TIDAK HADIR'
+    : state.petugasMode==='alpaKet' ? 'ALPA OTOMATIS'
     : 'KETERANGAN';
   return `
   <div class="screen">
@@ -1373,6 +1470,7 @@ function screenPetugasScan(){
               state.petugasMode==='manualMasuk' ? 'Cari siswa untuk mencatat kedatangan secara manual tanpa pindai QR.'
               : state.petugasMode==='manualPulang' ? 'Cari siswa untuk mencatat kepulangan secara manual tanpa pindai QR.'
               : state.petugasMode==='tidakHadir' ? 'Cari siswa yang belum tercatat masuk/pulang hari ini untuk mencatat alasan Sakit, Ijin, atau Emergency lainnya (bukan Alpa).'
+              : state.petugasMode==='alpaKet' ? 'Cari siswa yang hari ini tercatat Alpa secara OTOMATIS oleh sistem, untuk menambahkan keterangan yang sebenarnya.'
               : 'Cari siswa yang sudah tercatat masuk/pulang hari ini untuk menambahkan keterangan opsional (Sakit, Ijin, Bolos, Emergency dll).'
             }</p>` : ''}
             <div class="search-box">
@@ -1404,9 +1502,9 @@ function sidePanelContent(){
   const mode = state.petugasMode;
   const isQuickManual = mode === 'manualMasuk' || mode === 'manualPulang';
   if(state.lastResult){
-    const {student, ket, sendWa, type, updated} = state.lastResult;
+    const {student, ket, sendWa, type, updated, alpaKet} = state.lastResult;
     const effectiveType = type || (mode==='manualMasuk' ? 'masuk' : mode==='manualPulang' ? 'pulang' : mode);
-    const statusLabel = effectiveType==='masuk' ? 'Masuk' : effectiveType==='pulang' ? 'Pulang' : effectiveType==='tidakHadir' ? 'Tidak Hadir' : 'Keterangan';
+    const statusLabel = alpaKet ? 'Alpa Otomatis → Keterangan' : effectiveType==='masuk' ? 'Masuk' : effectiveType==='pulang' ? 'Pulang' : effectiveType==='tidakHadir' ? 'Tidak Hadir' : 'Keterangan';
     // Tampilkan "· <keterangan>" hanya jika ada keterangan khusus (Sakit/Ijin/dll).
     // Pemindaian masuk/pulang biasa tidak membawa keterangan apa pun.
     const ketSuffix = ket ? ` · ${ket}` : '';
@@ -1422,7 +1520,7 @@ function sidePanelContent(){
         <button class="btn btn-outline btn-block" id="btnScanNext">${nextLabel}</button>
       </div>`;
     }
-    const msg = buildWaMessage(student, effectiveType, ket, state.lainnyaNote);
+    const msg = buildWaMessage(student, effectiveType, ket, state.lainnyaNote, updated, alpaKet);
     return `
     <div class="result-card">
       <div class="result-icon ok">${ICON.check}</div>
@@ -1434,11 +1532,12 @@ function sidePanelContent(){
     </div>`;
   }
   if(!state.selectedStudent){
-    const title = mode==='manualMasuk' ? 'Input Manual Masuk' : mode==='manualPulang' ? 'Input Manual Pulang' : mode==='manual' ? 'Input Keterangan' : mode==='tidakHadir' ? 'Input Sakit / Ijin / Emergency' : 'Detail Pemindaian';
+    const title = mode==='manualMasuk' ? 'Input Manual Masuk' : mode==='manualPulang' ? 'Input Manual Pulang' : mode==='manual' ? 'Input Keterangan' : mode==='tidakHadir' ? 'Input Sakit / Ijin / Emergency' : mode==='alpaKet' ? 'Input Keterangan (Alpa Otomatis)' : 'Detail Pemindaian';
     const hint = mode==='manualMasuk' ? 'Cari dan pilih siswa untuk mencatat kedatangan secara manual tanpa pindai QR.'
       : mode==='manualPulang' ? 'Cari dan pilih siswa untuk mencatat kepulangan secara manual tanpa pindai QR.'
       : mode==='manual' ? 'Cari dan pilih siswa yang sudah tercatat masuk/pulang hari ini untuk menambahkan keterangan opsional.'
       : mode==='tidakHadir' ? 'Cari dan pilih siswa yang belum tercatat masuk/pulang hari ini untuk mencatat alasan Sakit, Ijin, atau Emergency lainnya — bukan Alpa.'
+      : mode==='alpaKet' ? 'Cari dan pilih siswa yang hari ini tercatat Alpa secara OTOMATIS oleh sistem, untuk menambahkan keterangan yang sebenarnya (Sakit/Ijin/Bolos/Emergency/Lainnya).'
       : 'Pindai kartu QR atau pilih siswa dari pencarian untuk melanjutkan.';
     return `<h4>${ICON.qr} ${title}</h4><div class="placeholder">${hint}</div>`;
   }
@@ -1507,6 +1606,50 @@ function sidePanelContent(){
     </div>
     ${state.selectedKet==='Lainnya' ? `<div class="field"><input id="lainnyaInput" placeholder="Tulis alasan sendiri..." value="${escapeHtml(state.lainnyaNote)}" style="width:100%;background:var(--well);border:1px solid var(--line-strong);border-radius:7px;padding:7px 10px;color:var(--text);font-size:14.38px;"></div>` : ''}
     <button class="btn btn-gold btn-block" id="btnConfirmTidakHadir" style="margin-top:6px;">${state.sendWaNotif ? 'Simpan &amp; Siapkan Notifikasi WA' : 'Simpan Keterangan'}</button>
+    <button class="btn btn-outline btn-block" id="btnCancelSelect" style="margin-top:8px;">Batal</button>
+    `;
+  }
+
+  // Mode "Input Keterangan (Alpa Otomatis)" — KHUSUS untuk mengubah keterangan
+  // siswa yang HARI INI ditandai "Alpa" secara OTOMATIS oleh sistem (trigger
+  // markAbsentStudentsAlpa_ di Code.gs, karena tidak ada aktivitas presensi
+  // sama sekali sampai jam pengecekan pukul 10.00). TIDAK membuat catatan
+  // baru — mengubah catatan Masuk yang sudah ada (Jenis "Alpa") menjadi
+  // keterangan yang lebih jelas (Sakit/Ijin/Bolos/Emergency/Lainnya), MIRIP
+  // dengan Input Keterangan biasa, tapi pesan WA-nya SENGAJA dibedakan (lihat
+  // buildWaMessage) karena di sini TIDAK ADA status "Tiba di Sekolah" maupun
+  // "Pulang" yang relevan — siswa ini memang tidak tercatat hadir sama sekali.
+  if(mode === 'alpaKet'){
+    const log = todayLogsFor(s.id).masuk;
+    const isAlpa = log && log.ket === 'Alpa';
+    if(!isAlpa){
+      return `
+      <h4>${ICON.qr} Input Keterangan (Alpa Otomatis)</h4>
+      <div class="selected-stu">
+        <div class="stu-avatar">${initials(s.name)}</div>
+        <div class="stu-info"><div class="nm">${escapeHtml(s.name)}</div><div class="meta">${escapeHtml(s.kelas)} · <span class="code">${s.code}</span></div></div>
+      </div>
+      <p style="font-size:14.38px;color:var(--text-faint);margin-bottom:12px;">${log ? `Siswa ini tercatat <b>${escapeHtml(log.ket||'Hadir')}</b> hari ini, bukan Alpa — gunakan mode <b>Input Keterangan</b> biasa untuk mengubahnya.` : 'Siswa ini belum ditandai Alpa otomatis hari ini — mungkin belum lewat jam pengecekan (sekitar pukul 10.00), atau memang belum ada catatan presensi apa pun.'}</p>
+      <button class="btn btn-outline btn-block" id="btnCancelSelect">Batal</button>
+      `;
+    }
+    return `
+    <h4>${ICON.qr} Input Keterangan (Alpa Otomatis)</h4>
+    <div class="selected-stu">
+      <div class="stu-avatar">${initials(s.name)}</div>
+      <div class="stu-info"><div class="nm">${escapeHtml(s.name)}</div><div class="meta">${escapeHtml(s.kelas)} · <span class="code">${s.code}</span></div></div>
+    </div>
+    <p style="font-size:14.38px;color:var(--text-faint);margin-bottom:12px;">Siswa ini tercatat <b>Alpa</b> secara otomatis oleh sistem (tidak ada aktivitas presensi sama sekali hari ini). Pilih keterangan yang sebenarnya di bawah ini.</p>
+    <label style="display:flex;align-items:center;gap:8px;font-size:15px;color:var(--text-dim);margin-bottom:12px;cursor:pointer;">
+      <input type="checkbox" id="waOptIn" ${state.sendWaNotif?'checked':''} style="width:15px;height:15px;accent-color:var(--gold);">
+      Kirim notifikasi WhatsApp ke orang tua
+    </label>
+    <label style="display:block;font-size:15px;color:var(--text-dim);margin-bottom:8px;">Keterangan</label>
+    <div class="ket-grid">
+      ${ALPA_KET_OPTIONS.map(k=>`<button class="ket-opt ${state.selectedKet===k?'active':''} ${k==='Lainnya'?'ket-opt-add':''}" data-ket="${k}">${ketOptionLabel(k)}</button>`).join('')}
+    </div>
+    ${state.selectedKet==='Lainnya' ? `<div class="field"><input id="lainnyaInput" placeholder="Tulis keterangan..." value="${escapeHtml(state.lainnyaNote)}" style="width:100%;background:var(--well);border:1px solid var(--line-strong);border-radius:7px;padding:7px 10px;color:var(--text);font-size:14.38px;"></div>` : ''}
+    <button class="btn btn-gold btn-block" id="btnSaveAlpaKet" style="margin-top:6px;">${state.sendWaNotif ? 'Simpan &amp; Siapkan Notifikasi WA' : 'Simpan Keterangan'}</button>
     <button class="btn btn-outline btn-block" id="btnCancelSelect" style="margin-top:8px;">Batal</button>
     `;
   }
@@ -1636,11 +1779,23 @@ function bindGlobalEvents(){
   // dipindai oleh Scanner Operator.
   on('#btnPrintCard','click', ()=> window.print());
   on('#btnDownloadAllQr','click', ()=>{
-    const sel = document.getElementById('qrBulkKelas');
+    const sel = document.getElementById('kartuBulkKelas');
     const kelas = sel ? sel.value : '';
     const list = kelas ? state.students.filter(s=>s.kelas===kelas) : state.students;
     downloadAllQr(list);
   });
+
+  // tab "Unduh Kode QR" — unduh QR polos saja, satuan maupun massal (ZIP)
+  on('#btnDownloadAllQrOnly','click', ()=>{
+    const sel = document.getElementById('qrOnlyBulkKelas');
+    const kelas = sel ? sel.value : '';
+    const list = kelas ? state.students.filter(s=>s.kelas===kelas) : state.students;
+    downloadAllQrOnly(list);
+  });
+  document.querySelectorAll('[data-qronly]').forEach(b=> b.addEventListener('click', ()=>{
+    const s = state.students.find(x=>x.id===b.dataset.qronly);
+    if(s) downloadSingleQrOnly(s);
+  }));
 
   // impor massal dari spreadsheet
   on('#btnDownloadTemplate','click', downloadImportTemplate);
@@ -1689,6 +1844,7 @@ function bindGlobalEvents(){
   on('#modeManualMasuk','click', ()=>{ state.petugasMode='manualMasuk'; resetScanState(); state.screen='petugasScan'; render(); });
   on('#modeManualPulang','click', ()=>{ state.petugasMode='manualPulang'; resetScanState(); state.screen='petugasScan'; render(); });
   on('#modeTidakHadir','click', ()=>{ state.petugasMode='tidakHadir'; resetScanState(); state.screen='petugasScan'; render(); });
+  on('#modeAlpaKet','click', ()=>{ state.petugasMode='alpaKet'; resetScanState(); state.screen='petugasScan'; render(); });
 
   // petugas scan
   on('#btnToggleCam','click', toggleCamera);
@@ -1726,6 +1882,7 @@ function bindSidePanelEvents(){
     refreshSidePanel();
   }));
   const sk = sp.querySelector('#btnSaveKetAnnotation'); if(sk) sk.addEventListener('click', confirmKetAnnotation);
+  const sak = sp.querySelector('#btnSaveAlpaKet'); if(sak) sak.addEventListener('click', confirmAlpaKet);
   const th = sp.querySelector('#btnConfirmTidakHadir'); if(th) th.addEventListener('click', confirmTidakHadir);
   const bk = sp.querySelector('#btnBackKetTarget'); if(bk) bk.addEventListener('click', ()=>{ state.selectedKetTarget=null; refreshSidePanel(); });
   const cc = sp.querySelector('#btnCancelSelect'); if(cc) cc.addEventListener('click', ()=>{ state.selectedStudent=null; state.selectedKetTarget=null; state.selectedKet=defaultKet(); state.lainnyaNote=''; refreshSidePanel(); });
@@ -1741,6 +1898,7 @@ function refreshSidePanel(){
 function defaultKet(){
   if(state.petugasMode === 'manual') return MANUAL_KET_OPTIONS[0];
   if(state.petugasMode === 'tidakHadir') return TIDAK_HADIR_KET_OPTIONS[0];
+  if(state.petugasMode === 'alpaKet') return ALPA_KET_OPTIONS[0];
   return 'Hadir';
 }
 
@@ -1754,6 +1912,15 @@ function pickStudent(s){
     const existing = todayTidakHadirFor(s.id);
     state.selectedKet = existing && TIDAK_HADIR_KET_OPTIONS.includes(existing.ket) ? existing.ket : TIDAK_HADIR_KET_OPTIONS[0];
     state.lainnyaNote = existing ? (existing.note || '') : '';
+  }else if(state.petugasMode === 'alpaKet'){
+    // Kalau catatan Masuk (Alpa) siswa ini sudah pernah diberi keterangan
+    // sebelumnya (mis. petugas mengubahnya dua kali), tampilkan keterangan
+    // terakhir sebagai titik awal — kalau belum pernah, mulai dari "Alpa"
+    // (status siswa saat ini) supaya petugas hanya perlu mengubahnya kalau
+    // memang ada alasan yang sudah jelas.
+    const log = todayLogsFor(s.id).masuk;
+    state.selectedKet = (log && ALPA_KET_OPTIONS.includes(log.ket)) ? log.ket : ALPA_KET_OPTIONS[0];
+    state.lainnyaNote = (log && log.note) || '';
   }else{
     state.selectedKet = defaultKet();
     state.lainnyaNote = '';
@@ -1880,17 +2047,47 @@ function downloadImportTemplate(){
   URL.revokeObjectURL(url);
 }
 
+/* ================= [OPTIMASI LOADING] LAZY-LOAD PUSTAKA BERAT ================= */
+// Memuat sebuah <script> eksternal secara dinamis HANYA saat benar-benar
+// dibutuhkan (dipanggil pertama kali fitur Admin yang memakainya), bukan di
+// setiap pembukaan aplikasi. Di-cache lewat _loadedScripts supaya pemanggilan
+// berulang (mis. impor Excel dua kali) tidak memuat ulang pustaka yang sama.
+const _loadedScripts = {};
+function loadScriptOnce(url, globalCheck){
+  // Kalau pustakanya sudah tersedia secara global (mis. sempat dimuat lewat
+  // cara lain), anggap sudah siap tanpa perlu fetch apa pun lagi.
+  if(globalCheck && globalCheck()) return Promise.resolve();
+  if(_loadedScripts[url]) return _loadedScripts[url];
+  _loadedScripts[url] = new Promise((resolve, reject)=>{
+    const s = document.createElement('script');
+    s.src = url;
+    s.onload = () => resolve();
+    s.onerror = () => { delete _loadedScripts[url]; reject(new Error('GAGAL_MUAT_PUSTAKA')); };
+    document.head.appendChild(s);
+  });
+  return _loadedScripts[url];
+}
+function loadXLSX(){
+  return loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js', ()=> typeof XLSX !== 'undefined');
+}
+function loadJSZip(){
+  return loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js', ()=> typeof JSZip !== 'undefined');
+}
+
 function handleImportFile(file){
   const reader = new FileReader();
-  reader.onload = (e) => {
+  reader.onload = async (e) => {
     try{
+      // Pustaka XLSX baru dimuat DI SINI (sekali saja, di-cache untuk
+      // pemakaian berikutnya) — bukan sejak aplikasi pertama dibuka.
+      await loadXLSX();
       const data = new Uint8Array(e.target.result);
       const wb = XLSX.read(data, { type:'array' });
       const sheet = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(sheet, { defval:'' });
       processImportRows(rows);
     }catch(err){
-      alert('Gagal membaca file. Pastikan formatnya .xlsx, .xls, atau .csv sesuai template.');
+      alert('Gagal membaca file. Pastikan formatnya .xlsx, .xls, atau .csv sesuai template, dan koneksi internet aktif (pustaka impor perlu dimuat sekali).');
     }
   };
   reader.onerror = () => alert('Gagal membaca file.');
@@ -2342,16 +2539,21 @@ function generateQrDataUrl(text, size){
 // foto, nama, kelas, dan QR) untuk setiap siswa di dalam `list`. Dipakai
 // tombol "Unduh Kartu Presensi (ZIP)" di panel Admin.
 async function downloadAllQr(list){
-  if(typeof JSZip === 'undefined'){
-    alert('Gagal memuat pustaka ZIP. Periksa koneksi internet lalu coba lagi.');
-    return;
-  }
   if(!list || !list.length){
     alert('Tidak ada siswa pada pilihan ini untuk diunduh kartunya.');
     return;
   }
   const btn = document.getElementById('btnDownloadAllQr');
-  if(btn){ btn.disabled = true; }
+  if(btn){ btn.disabled = true; btn.textContent = 'Menyiapkan pustaka ZIP...'; }
+  try{
+    // Pustaka JSZip baru dimuat DI SINI (sekali saja, di-cache) — bukan
+    // sejak aplikasi pertama dibuka — lihat loadJSZip()/loadScriptOnce().
+    await loadJSZip();
+  }catch(e){
+    alert('Gagal memuat pustaka ZIP. Periksa koneksi internet lalu coba lagi.');
+    if(btn){ btn.disabled = false; btn.innerHTML = `${ICON.download} Unduh Kartu Presensi (ZIP)`; }
+    return;
+  }
 
   const zip = new JSZip();
   const usedNames = {};
@@ -2396,6 +2598,86 @@ async function downloadAllQr(list){
   URL.revokeObjectURL(url);
 
   if(btn){ btn.disabled = false; btn.innerHTML = `${ICON.download} Unduh Kartu Presensi (ZIP)`; }
+}
+
+/* ================= UNDUH KODE QR POLOS (satuan & massal) ================= */
+// Berbeda dari downloadQr()/downloadAllQr() di atas: fungsi-fungsi ini
+// TIDAK menggambar kartu presensi lengkap (logo, foto, nama, kelas),
+// hanya kotak kode QR itu sendiri sebagai PNG.
+
+// Unduh SATU kode QR polos milik seorang siswa. Dipakai oleh tombol
+// unduh per-baris pada tab "Unduh Kode QR" di panel Admin.
+function downloadSingleQrOnly(student){
+  const dataUrl = generateQrDataUrl(student.code, 600);
+  if(!dataUrl){ alert('Gagal membuat kode QR. Coba lagi.'); return; }
+  const link = document.createElement('a');
+  link.download = `qr-${sanitizeFileName(student.name)}-${student.code}.png`;
+  link.href = dataUrl;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+// Buat & unduh satu file ZIP berisi kode QR POLOS (bukan kartu presensi
+// lengkap) untuk setiap siswa di dalam `list`. Dipakai tombol
+// "Unduh Kode QR (ZIP)" pada tab "Unduh Kode QR" di panel Admin.
+async function downloadAllQrOnly(list){
+  if(!list || !list.length){
+    alert('Tidak ada siswa pada pilihan ini untuk diunduh kode QR-nya.');
+    return;
+  }
+  const btn = document.getElementById('btnDownloadAllQrOnly');
+  if(btn){ btn.disabled = true; btn.textContent = 'Menyiapkan pustaka ZIP...'; }
+  try{
+    await loadJSZip();
+  }catch(e){
+    alert('Gagal memuat pustaka ZIP. Periksa koneksi internet lalu coba lagi.');
+    if(btn){ btn.disabled = false; btn.innerHTML = `${ICON.download} Unduh Kode QR (ZIP)`; }
+    return;
+  }
+
+  const zip = new JSZip();
+  const usedNames = {};
+  let failCount = 0;
+  for(let i=0;i<list.length;i++){
+    const s = list[i];
+    if(btn) btn.textContent = `Menyiapkan ${i+1}/${list.length}...`;
+    try{
+      const dataUrl = generateQrDataUrl(s.code, 600);
+      if(!dataUrl) throw new Error('Kode QR kosong');
+      const base64 = dataUrl.split(',')[1];
+      let fname = `${sanitizeFileName(s.kelas)}_${sanitizeFileName(s.name)}_${s.code}.png`;
+      if(usedNames[fname]){
+        usedNames[fname]++;
+        fname = fname.replace(/\.png$/, `_${usedNames[fname]}.png`);
+      }else{
+        usedNames[fname] = 1;
+      }
+      zip.file(fname, base64, { base64:true });
+    }catch(err){
+      console.error('Gagal membuat kode QR untuk', s.name, err);
+      failCount++;
+    }
+    // beri jeda singkat tiap 20 kode supaya antarmuka tetap responsif
+    if(i % 20 === 19){ await new Promise(r=> setTimeout(r, 0)); }
+  }
+  if(failCount === list.length){
+    alert('Gagal membuat kode QR siswa. Coba lagi.');
+    if(btn){ btn.disabled = false; btn.innerHTML = `${ICON.download} Unduh Kode QR (ZIP)`; }
+    return;
+  }
+
+  if(btn) btn.textContent = 'Membuat file ZIP...';
+  const blob = await zip.generateAsync({ type:'blob' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const scopeLabel = (list.length === state.students.length) ? 'semua-siswa' : sanitizeFileName(list[0].kelas);
+  a.download = `kode-qr-${scopeLabel}.zip`;
+  a.href = url;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+
+  if(btn){ btn.disabled = false; btn.innerHTML = `${ICON.download} Unduh Kode QR (ZIP)`; }
 }
 
 // Menyimpan catatan Masuk/Pulang — dipakai untuk SEMUA jalur pencatatan biasa:
@@ -2522,6 +2804,29 @@ function confirmKetAnnotation(){
   const sp = document.getElementById('sidePanel'); if(sp) sp.innerHTML = sidePanelContent();
 }
 
+// Mode "Input Keterangan (Alpa Otomatis)" — MENGUBAH catatan Masuk yang
+// sudah ditandai "Alpa" secara OTOMATIS oleh sistem (trigger
+// markAbsentStudentsAlpa_ di Code.gs) menjadi keterangan yang lebih jelas
+// (Sakit/Ijin/Bolos/Emergency/Lainnya). TIDAK membuat catatan baru — sama
+// seperti confirmKetAnnotation, tapi target-nya SELALU slot "masuk" (siswa
+// yang di-Alpa-kan otomatis memang belum pernah tercatat Masuk sungguhan),
+// dan hasilnya ditandai `alpaKet:true` supaya buildWaMessage tahu harus
+// memakai teks pesan WA yang berbeda (lihat catatan di buildWaMessage).
+function confirmAlpaKet(){
+  const s = state.selectedStudent;
+  if(!s) return;
+  const log = todayLogsFor(s.id).masuk;
+  if(!log || log.ket !== 'Alpa') return; // jaga-jaga: sudah bukan Alpa lagi (mis. diubah di perangkat lain)
+  const sendWa = state.sendWaNotif;
+  const ket = state.selectedKet;
+  const note = ket==='Lainnya' ? state.lainnyaNote : '';
+  log.ket = ket;
+  log.note = note;
+  updateLogEntry(log);
+  state.lastResult = { student:s, ket, sendWa, type:'masuk', updated:true, alpaKet:true };
+  const sp = document.getElementById('sidePanel'); if(sp) sp.innerHTML = sidePanelContent();
+}
+
 /* ================= AFTER RENDER (qr draw, camera) ================= */
 function afterRender(){
   if(state.qrModalStudent){
@@ -2593,11 +2898,21 @@ function playBeep(freq, duration, type, volume, delay){
     osc.stop(t0 + (duration || 0.12) + 0.03);
   }catch(e){ /* abaikan jika audio gagal diputar */ }
 }
+// [PENGUATAN PEMINDAIAN] Getaran singkat sebagai umpan balik TAMBAHAN selain
+// bip suara — sangat membantu di lingkungan gerbang yang ramai/berisik saat
+// bip sulit terdengar, atau saat HP disetel senyap. Vibration API HANYA
+// didukung di HP Android (Chrome/WebView) — otomatis diabaikan dengan aman
+// di iPhone (Safari iOS tidak mendukung API ini sama sekali) dan di
+// desktop/laptop, tanpa memicu error apa pun.
+function vibrateDevice(pattern){
+  try{ if(navigator.vibrate) navigator.vibrate(pattern); }catch(e){ /* abaikan jika tidak didukung */ }
+}
 // Bip pemindaian BERHASIL — dipakai SAMA PERSIS untuk Pemindai Masuk maupun
 // Pemindai Pulang. Dibuat panjang & keras: dua nada NAIK ("ding-DING") berurutan
 // dengan lapisan oktaf di atasnya, supaya terasa besar/penuh dan jelas terdengar
 // meski di lingkungan gerbang yang ramai.
 function playScanBeep(){
+  vibrateDevice(60); // getaran pendek tunggal = sinyal "berhasil" yang singkat & positif
   if(!audioCtx) return;
   playBeep(988,  0.16, 'triangle', 0.95, 0);     // nada 1 (pendek)
   playBeep(1319, 0.36, 'triangle', 0.98, 0.15);  // nada 2 (naik, panjang) — puncak bip
@@ -2609,6 +2924,7 @@ function playScanBeep(){
 // yang lebih tegas/kasar — supaya jelas berbeda dari bip sukses hanya dengan
 // mendengarkan, tanpa perlu melihat layar.
 function playRejectBeep(){
+  vibrateDevice([50,60,50]); // getaran GANDA (putus-putus) = sinyal "ditolak", terasa berbeda dari getaran sukses
   if(!audioCtx) return;
   playBeep(392, 0.20, 'sawtooth', 0.9, 0);     // nada 1
   playBeep(261, 0.40, 'sawtooth', 0.95, 0.19); // nada 2 (turun, panjang) — penekanan penolakan
