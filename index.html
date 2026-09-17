@@ -2971,24 +2971,52 @@ function scheduleNextScan(video){
   }
 }
 const MAX_SCAN_DIM = 720; // diperkecil dari 900 — jsQR memproses lebih cepat pada gambar lebih kecil, menambah jumlah percobaan pembacaan per detik
+
+// [PENGUATAN PEMINDAIAN] BarcodeDetector — decoder QR NATIVE bawaan OS/
+// browser (dipercepat perangkat keras), TERUTAMA tersedia di Android/
+// Chrome & Samsung Internet. JAUH lebih cepat & akurat dibanding jsQR
+// (decoder JS murni) karena tidak perlu menggambar frame ke canvas dulu —
+// dijalankan LANGSUNG pada elemen <video>. Dipakai sebagai LAPISAN
+// PERTAMA (tercepat) di tickScan(); kalau tidak tersedia (Safari/iOS dan
+// sebagian browser lain belum mendukung sama sekali) atau gagal
+// menemukan kode, otomatis jatuh ke jsQR sebagai cadangan universal yang
+// SUDAH TERBUKTI jalan di semua perangkat — jadi fungsi pemindaian tidak
+// pernah bergantung sepenuhnya pada API ini.
+let nativeBarcodeDetector = null;
+(async function initNativeBarcodeDetector(){
+  try{
+    if('BarcodeDetector' in window){
+      const formats = await window.BarcodeDetector.getSupportedFormats();
+      if(formats.includes('qr_code')){
+        nativeBarcodeDetector = new window.BarcodeDetector({ formats:['qr_code'] });
+      }
+    }
+  }catch(e){
+    nativeBarcodeDetector = null; // aman diabaikan — jsQR tetap berjalan normal sebagai cadangan
+  }
+})();
+
 const SCAN_COOLDOWN_MS = 2500; // jeda singkat anti-dobel (kode tak dikenali / sudah tercatat menurut cache lokal)
 const SAME_CODE_SUCCESS_COOLDOWN_MS = 60 * 1000; // 60 detik — jeda panjang untuk kode QR yang SAMA setelah berhasil tercatat (Masuk maupun Pulang)
 // Rangkaian constraint kamera dari yang paling spesifik ke yang paling longgar.
-// Resolusi 2K dicoba lebih dulu untuk detail ekstra pada kode QR kecil/jauh,
-// tapi TIDAK sampai 4K — resolusi setinggi itu sering gagal dinegosiasikan
-// dengan mulus oleh banyak HP (menyebabkan kamera lambat/gagal menyala) dan
-// terlalu berat diproses tiap frame. Detail ekstra untuk kode kecil/jauh kini
-// didapat lewat pemindaian area tengah beresolusi asli (lihat tickScan), BUKAN
-// dari menaikkan resolusi utama setinggi mungkin.
-// Sebagian perangkat (terutama iPhone/iPad tertentu, laptop dengan 1 kamera, atau
-// beberapa Android murah/lawas) menolak constraint yang terlalu ketat (mis. facingMode
-// exact atau resolusi tinggi) dengan OverconstrainedError — jadi kita coba beberapa
-// tingkat constraint sampai salah satu berhasil, alih-alih langsung gagal total.
+//
+// [PERKUATAN PEMINDAIAN — PATCH KECEPATAN] SEBELUMNYA resolusi 2K (2560x1440)
+// dicoba PALING PERTAMA. Ternyata ini kontraproduktif: setiap frame SELALU
+// diperkecil ke MAX_SCAN_DIM (720px) sebelum diproses jsQR/BarcodeDetector —
+// jadi resolusi 2K TIDAK menambah manfaat decode sama sekali untuk lapisan
+// pemindaian utama, TAPI di banyak HP kelas menengah-bawah, menegosiasikan
+// resolusi setinggi itu membuat kamera mengirim frame LEBIH JARANG (FPS
+// turun) — inilah penyebab pemindaian TERASA lambat, meski proses decode-nya
+// sendiri sudah cepat. Sekarang resolusi 1280x720 dengan frameRate tinggi
+// dicoba LEBIH DULU (framenya lebih sering/lancar = lebih banyak kesempatan
+// membaca kode per detik = terasa lebih responsif), sementara 1920x1080
+// tetap tersedia sebagai cadangan untuk kode QR kecil/jauh yang butuh detail
+// ekstra lewat pemindaian area tengah beresolusi asli (lihat tickScan).
+// Resolusi 2K/4K DIHAPUS dari rangkaian ini sepenuhnya.
 const CAMERA_CONSTRAINT_CHAIN = [
-  { video:{ facingMode:{ exact:'environment' }, width:{ ideal:2560 }, height:{ ideal:1440 } } },
-  { video:{ facingMode:'environment', width:{ ideal:2560 }, height:{ ideal:1440 } } },
+  { video:{ facingMode:{ exact:'environment' }, width:{ ideal:1280 }, height:{ ideal:720 }, frameRate:{ ideal:30, min:15 } } },
+  { video:{ facingMode:'environment', width:{ ideal:1280 }, height:{ ideal:720 }, frameRate:{ ideal:30, min:15 } } },
   { video:{ facingMode:'environment', width:{ ideal:1920 }, height:{ ideal:1080 } } },
-  { video:{ facingMode:'environment', width:{ ideal:1280 }, height:{ ideal:720 } } },
   { video:{ facingMode:'environment' } },
   { video:true }
 ];
@@ -3178,17 +3206,52 @@ async function tickScan(video){
   try{
     if(video.readyState === video.HAVE_ENOUGH_DATA && video.videoWidth > 0){
       const vw = video.videoWidth, vh = video.videoHeight;
-      // PEMINDAIAN UTAMA — dijalankan SETIAP frame. Ukurannya SENGAJA dipangkas
-      // ke maksimal ~900px sisi terpanjang (drawImage dari video langsung ke
-      // ukuran kecil ini, tanpa pernah membuat canvas beresolusi penuh) —
-      // supaya kecepatan & kelancaran pemindaian tetap konsisten di semua HP,
-      // berapa pun resolusi asli kamera yang berhasil dinegosiasikan.
-      const scale = Math.min(1, MAX_SCAN_DIM / Math.max(vw, vh));
-      const sw = Math.max(1, Math.round(vw * scale)), sh = Math.max(1, Math.round(vh * scale));
-      scanCanvas.width = sw; scanCanvas.height = sh;
-      scanCtx.drawImage(video, 0, 0, sw, sh);
-      const img = scanCtx.getImageData(0, 0, sw, sh);
-      let code = jsQR(img.data, img.width, img.height);
+      let code = null;
+
+      // LAPISAN PERTAMA (kalau tersedia): decoder QR native pada elemen
+      // <video> langsung. PENTING — kalau native detector berhasil DIPAKAI
+      // (tidak error), jsQR di bawah SENGAJA DILEWATI SEPENUHNYA untuk frame
+      // ini, walau native detector tidak menemukan kode apa pun (itu wajar,
+      // paling sering terjadi karena memang belum ada kartu di depan
+      // kamera). Ini PENTING untuk KECEPATAN: menjalankan jsQR SETELAH native
+      // detector pada SETIAP frame (termasuk saat tidak ada kartu sama
+      // sekali) berarti mengerjakan DUA KALI proses decode per frame,
+      // sehingga justru MEMPERLAMBAT laju pemindaian secara keseluruhan.
+      // jsQR HANYA dipakai sebagai cadangan kalau native detector benar-benar
+      // TIDAK TERSEDIA di browser ini, atau baru saja gagal/error (jarang).
+      if(nativeBarcodeDetector){
+        try{
+          const barcodes = await nativeBarcodeDetector.detect(video);
+          if(barcodes && barcodes.length && barcodes[0].rawValue){
+            code = { data: barcodes[0].rawValue };
+          }
+        }catch(e){
+          // Native detector betul-betul bermasalah — matikan untuk SISA sesi
+          // pemindaian ini (bukan hanya frame ini), lalu langsung lanjut ke
+          // jsQR di bawah sebagai cadangan mulai frame ini juga.
+          nativeBarcodeDetector = null;
+        }
+      }
+
+      // PEMINDAIAN UTAMA (jsQR) — HANYA dijalankan kalau native detector di
+      // atas TIDAK TERSEDIA sama sekali (mis. Safari/iOS) atau baru saja
+      // dimatikan karena error. { inversionAttempts:"dontInvert" } SENGAJA
+      // ditambahkan — tanpa opsi ini, jsQR secara default MENCOBA DUA KALI
+      // (warna normal DAN dibalik/invert) di SETIAP pemanggilan untuk
+      // menjaga-jaga kode QR putih-di-atas-hitam, padahal kartu presensi di
+      // sini SELALU dicetak gelap-di-atas-terang seperti biasa — jadi opsi
+      // ini memangkas kerja jsQR kira-kira SETENGAHNYA per frame, mempercepat
+      // pemindaian secara nyata tanpa mengurangi keandalan sama sekali untuk
+      // kartu yang memang dicetak normal.
+      const JSQR_OPTS = { inversionAttempts: 'dontInvert' };
+      if(!nativeBarcodeDetector && !code){
+        const scale = Math.min(1, MAX_SCAN_DIM / Math.max(vw, vh));
+        const sw = Math.max(1, Math.round(vw * scale)), sh = Math.max(1, Math.round(vh * scale));
+        scanCanvas.width = sw; scanCanvas.height = sh;
+        scanCtx.drawImage(video, 0, 0, sw, sh);
+        const img = scanCtx.getImageData(0, 0, sw, sh);
+        code = jsQR(img.data, img.width, img.height, JSQR_OPTS);
+      }
       // LAPISAN KEDUA — khusus kode QR yang kecil/berjarak agak jauh: kalau
       // pemindaian utama di atas tidak menemukan apa pun, coba pindai ULANG
       // hanya area TENGAH bingkai (tempat operator biasanya mengarahkan kartu)
