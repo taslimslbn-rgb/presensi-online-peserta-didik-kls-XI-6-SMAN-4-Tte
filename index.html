@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="id">
 <head>
@@ -604,7 +603,7 @@ const ICON = {
 // password (API_PASSWORD) yang sama dengan yang ditulis di Code.gs.
 // Selama dua nilai ini kosong, verifikasi PIN akan menampilkan pesan
 // "server belum terhubung" alih-alih diam-diam menerima PIN apa pun.
-const API_URL = 'https://script.google.com/macros/s/AKfycbxQjXNVPkYRH6V5nLZ3kD8ZXEB94quFAGLBKrXDVEKYSOD0482xYCFcnXLDNRyQOAg-yA/exec'
+const API_URL = 'https://script.google.com/macros/s/AKfycbxC5RKfSeq78OkkHdmxGGnOzoHt6H5k6YvDhxBNAcO9WJUkNulOFITVOWc1TDdCIld2DA/exec'
 const API_KEY = 'SMA04T'; // samakan dengan API_PASSWORD di Code.gs
 
 async function callApi(payload){
@@ -1488,8 +1487,27 @@ function screenPetugasScan(){
 
 function searchResultsHtml(){
   const q = (state.searchQuery||'').toLowerCase();
-  const list = state.students.filter(s => !q || s.name.toLowerCase().includes(q) || s.kelas.toLowerCase().includes(q)).slice(0,8);
+  // Mode "Input Manual Pulang" — daftar HANYA berisi siswa yang HARI INI
+  // BELUM tercatat Pulang sama sekali (baik lewat pindai QR maupun input
+  // manual sebelumnya).
+  const baseList = state.petugasMode === 'alpaKet'
+    ? state.students.filter(s => { const log = todayLogsFor(s.id).masuk; return log && log.ket === 'Alpa'; })
+    : state.petugasMode === 'manualMasuk'
+    ? state.students.filter(s => !todayLogsFor(s.id).masuk)
+    : state.petugasMode === 'manualPulang'
+    ? state.students.filter(s => !todayLogsFor(s.id).pulang)
+    : state.students;
+  const list = baseList.filter(s => !q || s.name.toLowerCase().includes(q) || s.kelas.toLowerCase().includes(q)).slice(0,8);
   if(state.students.length===0) return emptyState('Belum ada data siswa. Tambahkan lewat panel Admin.');
+  if(state.petugasMode === 'alpaKet' && baseList.length===0){
+    return `<div style="padding:16px;color:var(--text-faint);font-size:16.25px;">Belum ada siswa yang tercatat Alpa otomatis hari ini.</div>`;
+  }
+  if(state.petugasMode === 'manualMasuk' && baseList.length===0){
+    return `<div style="padding:16px;color:var(--text-faint);font-size:16.25px;">Semua siswa sudah tercatat Masuk hari ini.</div>`;
+  }
+  if(state.petugasMode === 'manualPulang' && baseList.length===0){
+    return `<div style="padding:16px;color:var(--text-faint);font-size:16.25px;">Semua siswa sudah tercatat Pulang hari ini.</div>`;
+  }
   if(list.length===0) return `<div style="padding:16px;color:var(--text-faint);font-size:16.25px;">Tidak ditemukan.</div>`;
   return list.map(s=>`
     <button class="search-item" data-pick="${s.id}">
