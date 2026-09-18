@@ -620,6 +620,7 @@ async function callApi(payload){
     // supaya pemanggil (tickScan/confirmManualAttendance) bisa menampilkan
     // notifikasi yang tepat — bukan menganggapnya berhasil secara diam-diam.
     if(json.duplicate){ err.duplicate = true; err.existing = json.existing; }
+    if(json.blockedByTidakHadir){ err.blockedByTidakHadir = true; err.existing = json.existing; }
     throw err;
   }
   return json;
@@ -894,6 +895,13 @@ async function saveStudents(){
 //                                            perangkat manapun) — `existing`
 //                                            dipakai untuk menyelaraskan
 //                                            cache lokal & pesan notifikasi
+//   { ok:false, blockedByTidakHadir:true, existing } — DITOLAK karena siswa
+//                                            ini SUDAH tercatat Tidak Hadir
+//                                            (Sakit/Ijin/Emergency/Lainnya)
+//                                            hari ini — tidak boleh lagi
+//                                            tercatat Masuk/Pulang di hari
+//                                            yang sama (lihat addLog_ di
+//                                            Code.gs)
 //   { ok:true, offline:true }            — server tak terjangkau, tersimpan
 //                                            LOKAL saja (tidak terverifikasi
 //                                            lintas perangkat)
@@ -905,6 +913,9 @@ async function saveLogEntry(log){
     }catch(e){
       if(e.duplicate){
         return { ok:false, duplicate:true, existing:e.existing };
+      }
+      if(e.blockedByTidakHadir){
+        return { ok:false, blockedByTidakHadir:true, existing:e.existing };
       }
       // gagal karena sebab lain (jaringan/server) — lanjut ke penyimpanan
       // lokal di bawah supaya catatan tidak hilang, tapi ditandai `offline`
@@ -1487,15 +1498,31 @@ function screenPetugasScan(){
 
 function searchResultsHtml(){
   const q = (state.searchQuery||'').toLowerCase();
-  // Mode "Input Manual Pulang" — daftar HANYA berisi siswa yang HARI INI
-  // BELUM tercatat Pulang sama sekali (baik lewat pindai QR maupun input
-  // manual sebelumnya).
+  // Mode "Input Manual Masuk"/"Input Manual Pulang" — daftar HANYA berisi
+  // siswa yang HARI INI BELUM tercatat Masuk/Pulang (baik lewat pindai QR
+  // maupun input manual sebelumnya) DAN BELUM tercatat "Tidak Hadir"
+  // (Sakit/Ijin/Emergency/Lainnya — termasuk keterangan tulisan bebas).
+  // Siswa yang sudah dinyatakan Tidak Hadir TIDAK BOLEH lagi dicatat
+  // Masuk/Pulang di hari yang sama (server juga menolak permintaan ini
+  // secara mandiri lewat addLog_ di Code.gs, berlaku lintas perangkat —
+  // filter di sini murni supaya petugas tidak perlu mencoba dulu).
+  // Mode "Input Sakit/Ijin/Emergency" (tidakHadir) — daftar HANYA berisi
+  // siswa yang HARI INI BENAR-BENAR BELUM tercatat APA PUN sama sekali
+  // pada kolom Jenis di sheet Absensi — bukan Masuk, bukan Alpa (Alpa
+  // menempati slot "masuk" yang sama), bukan Pulang, dan bukan pula
+  // sudah tercatat Tidak Hadir sebelumnya (Sakit/Ijin/Emergency/Lainnya).
+  // Siswa yang sudah punya catatan APA PUN hari ini TIDAK ditampilkan
+  // lagi di sini — kalau memang keterangannya perlu diubah, gunakan tombol
+  // "Keterangan" pada mode Input Manual (Keterangan) untuk catatan yang
+  // sudah ada, bukan lewat mode ini.
   const baseList = state.petugasMode === 'alpaKet'
     ? state.students.filter(s => { const log = todayLogsFor(s.id).masuk; return log && log.ket === 'Alpa'; })
     : state.petugasMode === 'manualMasuk'
-    ? state.students.filter(s => !todayLogsFor(s.id).masuk)
+    ? state.students.filter(s => !todayLogsFor(s.id).masuk && !todayTidakHadirFor(s.id))
     : state.petugasMode === 'manualPulang'
-    ? state.students.filter(s => !todayLogsFor(s.id).pulang)
+    ? state.students.filter(s => !todayLogsFor(s.id).pulang && !todayTidakHadirFor(s.id))
+    : state.petugasMode === 'tidakHadir'
+    ? state.students.filter(s => !todayLogsFor(s.id).masuk && !todayLogsFor(s.id).pulang && !todayTidakHadirFor(s.id))
     : state.students;
   const list = baseList.filter(s => !q || s.name.toLowerCase().includes(q) || s.kelas.toLowerCase().includes(q)).slice(0,8);
   if(state.students.length===0) return emptyState('Belum ada data siswa. Tambahkan lewat panel Admin.');
@@ -1503,10 +1530,13 @@ function searchResultsHtml(){
     return `<div style="padding:16px;color:var(--text-faint);font-size:16.25px;">Belum ada siswa yang tercatat Alpa otomatis hari ini.</div>`;
   }
   if(state.petugasMode === 'manualMasuk' && baseList.length===0){
-    return `<div style="padding:16px;color:var(--text-faint);font-size:16.25px;">Semua siswa sudah tercatat Masuk hari ini.</div>`;
+    return `<div style="padding:16px;color:var(--text-faint);font-size:16.25px;">Semua siswa sudah tercatat Masuk atau Tidak Hadir hari ini.</div>`;
   }
   if(state.petugasMode === 'manualPulang' && baseList.length===0){
-    return `<div style="padding:16px;color:var(--text-faint);font-size:16.25px;">Semua siswa sudah tercatat Pulang hari ini.</div>`;
+    return `<div style="padding:16px;color:var(--text-faint);font-size:16.25px;">Semua siswa sudah tercatat Pulang atau Tidak Hadir hari ini.</div>`;
+  }
+  if(state.petugasMode === 'tidakHadir' && baseList.length===0){
+    return `<div style="padding:16px;color:var(--text-faint);font-size:16.25px;">Semua siswa sudah memiliki catatan (Masuk/Alpa/Pulang/Tidak Hadir) hari ini.</div>`;
   }
   if(list.length===0) return `<div style="padding:16px;color:var(--text-faint);font-size:16.25px;">Tidak ditemukan.</div>`;
   return list.map(s=>`
@@ -2744,6 +2774,18 @@ async function confirmManualAttendance(type){
     return;
   }
 
+  // Siswa ini SUDAH tercatat "Tidak Hadir" (Sakit/Ijin/Emergency/Lainnya —
+  // termasuk keterangan tulisan bebas) hari ini — TIDAK BOLEH lagi
+  // tercatat Masuk/Pulang di hari yang sama. Ditolak oleh server (lihat
+  // addLog_ di Code.gs), berlaku LINTAS PERANGKAT.
+  if(result.blockedByTidakHadir){
+    playRejectBeep();
+    const ketTerdaftar = (result.existing && result.existing.ket) ? result.existing.ket : 'Tidak Hadir';
+    showToast(`Pemindaian ditolak — ${s.name} sudah tercatat TIDAK HADIR (${ketTerdaftar}) hari ini, sehingga tidak bisa dicatat ${label}.`, 'warn');
+    if(btn){ btn.disabled = false; btn.textContent = btn.dataset.origText || btn.textContent; }
+    return;
+  }
+
   playScanBeep();
   state.logs.push(log);
   state.lastResult = { student:s, ket:'', sendWa, type };
@@ -3255,19 +3297,38 @@ async function tickScan(video){
       // LAPISAN KEDUA — khusus kode QR yang kecil/berjarak agak jauh: kalau
       // pemindaian utama di atas tidak menemukan apa pun, coba pindai ULANG
       // hanya area TENGAH bingkai (tempat operator biasanya mengarahkan kartu)
-      // pada RESOLUSI ASLI kamera (canvas terpisah, tidak dipangkas), supaya
-      // detail piksel kode yang kecil tetap terjaga. Hanya dijalankan setiap
-      // beberapa frame saat tidak ada kode ditemukan — bukan tiap frame — agar
-      // tidak membebani HP kelas bawah maupun mengganggu kelancaran kamera.
+      // pada RESOLUSI ASLI kamera (canvas terpisah, dipotong pas ukurannya —
+      // BUKAN sekadar getImageData dari frame penuh, supaya kalau native
+      // detector dipakai, ia juga cuma perlu memeriksa area kecil ini, bukan
+      // seluruh frame beresolusi penuh). Hanya dijalankan setiap beberapa
+      // frame saat tidak ada kode ditemukan — bukan tiap frame — agar tidak
+      // membebani HP kelas bawah maupun mengganggu kelancaran kamera.
+      //
+      // SAMA seperti lapisan pertama: kalau native detector TERSEDIA, lapisan
+      // ini memakainya juga (konsisten cepat & akurat) — jsQR dengan
+      // dontInvert HANYA dipakai sebagai cadangan kalau native detector
+      // tidak tersedia di browser ini.
       if(!code){
         scanFrameCounter = (scanFrameCounter + 1) % 3;
         if(scanFrameCounter === 0){
-          scanCanvasFull.width = vw; scanCanvasFull.height = vh;
-          scanCtxFull.drawImage(video, 0, 0, vw, vh);
           const cropW = Math.round(vw * 0.5), cropH = Math.round(vh * 0.5);
           const cropX = Math.round((vw - cropW) / 2), cropY = Math.round((vh - cropH) / 2);
-          const centerImg = scanCtxFull.getImageData(cropX, cropY, cropW, cropH);
-          code = jsQR(centerImg.data, centerImg.width, centerImg.height);
+          scanCanvasFull.width = cropW; scanCanvasFull.height = cropH;
+          scanCtxFull.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+          if(nativeBarcodeDetector){
+            try{
+              const barcodes = await nativeBarcodeDetector.detect(scanCanvasFull);
+              if(barcodes && barcodes.length && barcodes[0].rawValue){
+                code = { data: barcodes[0].rawValue };
+              }
+            }catch(e){
+              nativeBarcodeDetector = null; // matikan untuk sisa sesi ini, lanjut ke jsQR di bawah
+            }
+          }
+          if(!nativeBarcodeDetector && !code){
+            const centerImg = scanCtxFull.getImageData(0, 0, cropW, cropH);
+            code = jsQR(centerImg.data, centerImg.width, centerImg.height, JSQR_OPTS);
+          }
         }
       }
       if(code && code.data){
@@ -3329,6 +3390,20 @@ async function tickScan(video){
           playRejectBeep();
           const waktu = result.existing ? ` pukul ${timeOnly(result.existing.timestamp)}` : '';
           showToast(`Pemindaian ditolak — ${found.name} sudah tercatat ${label} hari ini${waktu} (di perangkat lain).`, 'warn');
+          scheduleNextScan(video);
+          return;
+        }
+        // Siswa ini SUDAH tercatat "Tidak Hadir" (Sakit/Ijin/Emergency/Lainnya
+        // — termasuk keterangan tulisan bebas) hari ini — TIDAK BOLEH lagi
+        // tercatat Masuk/Pulang lewat pemindaian QR di hari yang sama.
+        // Ditolak oleh server (lihat addLog_ di Code.gs), berlaku LINTAS
+        // PERANGKAT. Dikunci jeda panjang juga supaya kamera tidak
+        // terus-menerus memeriksa ulang kode QR yang sama.
+        if(result.blockedByTidakHadir){
+          state.scanCooldowns[scannedCode] = now + SAME_CODE_SUCCESS_COOLDOWN_MS;
+          playRejectBeep();
+          const ketTerdaftar = (result.existing && result.existing.ket) ? result.existing.ket : 'Tidak Hadir';
+          showToast(`Pemindaian ditolak — ${found.name} sudah tercatat TIDAK HADIR (${ketTerdaftar}) hari ini, sehingga tidak bisa dicatat ${label}.`, 'warn');
           scheduleNextScan(video);
           return;
         }
